@@ -1,11 +1,11 @@
 name: jami-store-requests-manager
-run-name: ${ github.actor } requests attention
+run-name: ${{ github.actor }} requests attention
 on:
   issues:
     types: [opened, labeled]
 jobs:
   request-new-organization:
-    runs-on: ubuntu
+    runs-on:  ubuntu-latest
     if: contains(github.event.issue.labels.*.name, 'organization plugins store request')
     steps:
       - name: ask to upload a new csr
@@ -19,7 +19,7 @@ jobs:
               body: 'Please upload a new csr'
             })
   request-upload-plugin:
-    runs-on: ubuntu
+    runs-on:  ubuntu-latest
     if: contains(github.event.issue.labels.*.name, 'upload plugin request')
     steps:
       - name: ask to upload a new signed plugin
