@@ -6,7 +6,7 @@ on:
 jobs:
   verify-csr:
     runs-on:  ubuntu-latest
-    if: contains(github.event.issue.labels.*.name, 'new organization request') && contains(github.event.comment.body, '/csr')
+    if: contains(github.event.issue.labels.*.name, 'new organization request') && startsWith(github.event.comment.body, '/csr')
     steps:
       - name: verify the CSR file is attached
         id: verify_attached_csr
@@ -51,7 +51,7 @@ jobs:
         with:
           script: curl -s ${{ steps.verify_attached_csr.outputs.result[0] }} | tar -xz -O csr.pem | openssl req -noout -text
       - name: handle error
-        if: ! endsWith(steps.request-verify-csr.outputs, 'OK')  && steps.verify_attached_csr.outputs.result.length == 1
+        if: steps.verify_attached_csr.outputs.result.length == 1 && contains(steps.request-verify-csr.outputs.result[0], 'OK') == false
         id: request-verify-csr-error
         run: |
             github.rest.issues.createComment({
