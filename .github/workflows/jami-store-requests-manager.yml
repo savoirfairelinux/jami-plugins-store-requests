@@ -5,11 +5,9 @@ on:
     types: [created, edited]
 jobs:
   verify-csr:
-    runs-on:  ubuntu-latest
     if: contains(github.event.issue.labels.*.name, 'new organization request') && startsWith(github.event.comment.body, '/csr')
+    runs-on:  ubuntu-latest
     steps:
-      - name: Print the event object
-        run: echo "${{ toJson(github.event) }}"
       - name: verify the CSR file is attached
         id: verify_attached_csr
         uses: actions/github-script@v6
