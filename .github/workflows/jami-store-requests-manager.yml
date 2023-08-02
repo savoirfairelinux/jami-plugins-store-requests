@@ -8,14 +8,16 @@ jobs:
     runs-on:  ubuntu-latest
     if: contains(github.event.issue.labels.*.name, 'new organization request') && startsWith(github.event.comment.body, '/csr')
     steps:
+      - name: Print the event object
+        run: echo "${{ toJson(github.event) }}"
       - name: verify the CSR file is attached
         id: verify_attached_csr
         uses: actions/github-script@v6
         with:
           script: |
             const regex = /^https:\/\/github\.com\/savoirfairelinux\/jami-plugins-store-requests\/files\/.*/;
-            console.log(github.event.comment.body);
-            return regex.match(github.event.comment.body);
+            console.log(github.event.issue);
+            return regex.match(github.event.issue.comment.body);
       - name: ask to upload the CSR file
         if: steps.verify_attached_csr.outputs.result.length == 0
         uses: actions/github-script@v6
