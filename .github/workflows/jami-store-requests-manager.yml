@@ -4,96 +4,137 @@ on:
   issue_comment:
     types: [created, edited]
 jobs:
-  verify-csr:
+  set-up:
     if: contains(github.event.issue.labels.*.name, 'new organization request') && startsWith(github.event.comment.body, '/csr')
     runs-on:  ubuntu-latest
+    outputs:
+      attachements: ${{ steps.verify_attached_csr.outputs.result }}
+      repo: ${{ steps.repo.outputs.result }}
+      fileName: ${{ steps.request.outputs.result }}
     steps:
       - name: verify the CSR file is attached
         id: verify_attached_csr
         uses: actions/github-script@v6
         with:
           script: |
-            const regex = /^https:\/\/github\.com\/savoirfairelinux\/jami-plugins-store-requests\/files\/.*/;
-            console.log(context.issue);
-            return regex.match(github.event.issue.comment.body);
+            const regex = /https:\/\/github\.com\/.*\/files\/.*\/*.gz/;
+            const comment = ${{ toJSON(github.event.comment) }};
+            const attachements = comment.body.match(regex);
+            return attachements;
+      - name: get-request-file-name
+        id: request
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const request = "${{ fromJSON(steps.verify_attached_csr.outputs.result)[0] }}"
+            const extensionIndex = request.split("/").at(-1).lastIndexOf(".");
+            fileName = request.substring(0, extensionIndex);
+            return fileName;
+      - name: get-repo-base-name
+        id: repo
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const repo = "${{ github.repository }}"
+            baseName = repo.split("/").at(-1);
+            return baseName;
+  handle-bad-csr:
+    runs-on:  ubuntu-latest
+    permissions:
+      issues: write
+    needs: [set-up]
+    if: needs.set-up.outputs.attachements == 'null'
+    steps:
       - name: ask to upload the CSR file
-        if: steps.verify_attached_csr.outputs.result.length == 0
-        uses: actions/github-script@v6
+        uses: actions-ecosystem/action-create-comment@v1
         with:
-          script: |
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: 'Please upload the CSR file'
-            })
-            exit 1
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          body: |
+            @${{ github.actor }} Please upload your CSR file to your comment and verify that your file is a gz.
+  verify-csr:
+    if: needs.set-up.outputs.attachements != 'null'
+    runs-on:  ubuntu-latest
+    permissions:
+      issues: write
+    needs: [set-up]
+    steps:
+      - name: comment-verification-in-progress
+        uses: actions-ecosystem/action-create-comment@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          body: |
+            CSR file uploaded, verification in progress
       - name: add label to process the request
-        if: steps.verify_attached_csr.outputs.result.length == 1
         uses: actions/github-script@v6
         with:
           script: |
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: 'CSR file uploaded, verification in progress'
-            })
             github.rest.issues.addLabels({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              issue_number: ${{ github.event.issue.number }},
+              owner: "${{ github.repository_owner}}",
+              repo: ${{ needs.set-up.outputs.repo }},
               labels: ['csr verification in progress']
             })
       - name: request verify the csr
         id: request-verify-csr
-        if: steps.verify_attached_csr.outputs.result.length == 1
+        run: |
+          csr_verification=$(wget -O - -o /dev/null ${{ fromJSON(needs.set-up.outputs.attachements)[0] }} | gzip -dc | openssl req -noout  -verify 2>&1)
+          echo "csr_verification=${csr_verification}" >> $GITHUB_OUTPUT
+      - name: handle error
+        if: endsWith(steps.request-verify-csr.outputs.csr_verification, 'OK') == false || failure()
+        id: request-verify-csr-error
         uses: actions/github-script@v6
         with:
-          script: curl -s ${{ steps.verify_attached_csr.outputs.result[0] }} | tar -xz -O csr.pem | openssl req -noout -text
-      - name: handle error
-        if: steps.verify_attached_csr.outputs.result.length == 1 && contains(steps.request-verify-csr.outputs.result[0], 'OK') == false
-        id: request-verify-csr-error
-        run: |
+          script: |
             github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              issue_number: ${{ github.event.issue.number }},
+              owner: "${{ github.repository_owner}}",
+              repo: ${{ needs.set-up.outputs.repo }},
               body: 'CSR is invalid, Please retry'
             })
             github.rest.issues.addLabels({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              issue_number: ${{ github.event.issue.number }},
+              owner: "${{ github.repository_owner}}",
+              repo: ${{ needs.set-up.outputs.repo }},
               labels: ['invalid csr']
             })
       - name: handle success when requesting verify the csr
-        if: endsWith(steps.request-verify-csr.outputs, 'OK') && steps.verify_attached_csr.outputs.result.length == 1
-        run: |
-          github.rest.issues.createComment({
-            issue_number: context.issue.number,
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            body: '${{ github.actor}}, your certificate signing request is valid. Please wait for a store manager to process your request.'
-          })
-          github.rest.issues.addLabels({
-            issue_number: context.issue.number,
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            labels: ['valid csr']
-          })
-          github.rest.issues.removeLabel({
-            issue_number: context.issue.number,
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            labels: 'invalid csr'
-          })
-      - name: remove label to process the request
-        if: steps.verify_attached_csr.outputs.result.length == 1
-        run: |
-          github.rest.issues.removeLabel({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              name: 'verification in progress'
+        if: endsWith(steps.request-verify-csr.outputs.csr_verification, 'OK')
+        uses: actions/github-script@v6
+        continue-on-error: true
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: ${{ github.event.issue.number }},
+              owner: "${{ github.repository_owner}}",
+              repo: ${{ needs.set-up.outputs.repo }},
+              body: '${{ github.actor}}, your certificate signing request is valid. Please wait for a store manager to process your request.'
             })
+            github.rest.issues.addLabels({
+              issue_number: ${{ github.event.issue.number }},
+              owner: "${{ github.repository_owner}}",
+              repo: ${{ needs.set-up.outputs.repo }},
+              labels: ['valid csr']
+            })
+            github.rest.issues.removeLabel({
+              issue_number: ${{ github.event.issue.number }},
+              owner: "${{ github.repository_owner}}",
+              repo: ${{ needs.set-up.outputs.repo }},
+              name: ['invalid csr']
+            })
+            github.rest.issues.removeLabel({
+              issue_number: ${{ github.event.issue.number }},
+              owner: "${{ github.repository_owner}}",
+              repo: ${{ needs.set-up.outputs.repo }},
+              name: ['csr verification in progress']
+            })
+      - name: remove label to process the request
+        uses: actions/github-script@v6
+        continue-on-error: true
+        with:
+          script: |
+            github.rest.issues.removeLabel({
+                issue_number: ${{ github.event.issue.number }},
+                owner: "${{ github.repository_owner}}",
+                repo: ${{ needs.set-up.outputs.repo }},
+                name: ['verification in progress']
+              })
