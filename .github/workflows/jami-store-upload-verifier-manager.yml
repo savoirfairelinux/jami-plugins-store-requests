@@ -1,0 +1,236 @@
+name: jami-store-upload-verifier-manager
+run-name: New Upload request from ${{ github.actor }}
+on:
+  issue_comment:
+    types: [edited, created]
+jobs:
+    set-up:
+        if: contains(github.event.issue.labels.*.name, 'new upload request') && startsWith(github.event.comment.body, '/upload')
+        runs-on:  ubuntu-latest
+        outputs:
+          repo: ${{ steps.repo.outputs.result }}
+          pluginName: ${{ steps.find_plugin_name.outputs.result }}
+          pluginArch: ${{ steps.find_plugin_arch.outputs.result }}
+          attachements: ${{ steps.verify_attached_plugin.outputs.result }}
+        steps:
+          - name: verify the plugin file is attached
+            id: verify_attached_plugin
+            uses: actions/github-script@v6
+            with:
+              script: |
+                const regex = /https?:\/\/.*\/.*\.jpl/;
+                const comment = ${{ toJSON(github.event.comment) }};
+                const attachements = comment.body.match(regex);
+                return attachements;
+          - name: get-repo-base-name
+            id: repo
+            uses: actions/github-script@v6
+            with:
+              script: |
+                  const repo = "${{ github.repository }}"
+                  baseName = repo.split("/").at(-1);
+                  return baseName;
+          - name: find the name of the plugin
+            id: find_plugin_name
+            run: |
+              PLUGIN_FILE=$(basename "${{ fromJSON(steps.verify_attached_plugin.outputs.result)[0] }}")
+              echo "result=${PLUGIN_FILE%.*}" >> $GITHUB_OUTPUT
+          - name: find the architecture of the plugin
+            id: find_plugin_arch
+            run: |
+              curl -o ${{ github.workspace }}/plugin.jpl -L "${{ fromJSON(steps.verify_attached_plugin.outputs.result)[0] }}"
+              regex='^lib/([^/]+)/'
+              ARCHES=$(unzip -l ${{ github.workspace }}/plugin.jpl "lib/*" | grep lib | awk '{ print $NF }' |  grep -oP "$regex" | awk -F'/' '{ print $2 }')
+              PLUGIN_ARCHES=$(jq -nR '[inputs]' <<< "${ARCHES[@]}")
+              TARGET_ARCH=$(echo "$PLUGIN_ARCHES" | jq -r '.[0]')
+              echo "result="${TARGET_ARCH}"" >> $GITHUB_OUTPUT
+    handle-error:
+        needs: [set-up]
+        if: needs.set-up.outputs.attachements == 'null'
+        runs-on: ubuntu-latest
+        permissions:
+          issues: write
+        steps:
+            - name: handle error
+              id: handle-error
+              uses: actions/github-script@v6
+              with:
+                script: |
+                    github.rest.issues.createComment({
+                        issue_number: ${{ github.event.issue.number }},
+                        owner: "${{ github.repository_owner}}",
+                        repo: ${{ needs.set-up.outputs.repo }},
+                        body: '${{ github.actor}}, Please wait the organization to upload the plugin.'
+                    });
+    verify-certificate:
+      if: needs.set-up.outputs.attachements != 'null'
+      runs-on:  ubuntu-latest
+      permissions:
+        issues: write
+      outputs:
+        result: ${{ steps.request-verify-plugin-certificate.outputs.verification }}
+      needs: [set-up]
+      steps:
+        - name: comment-verification-in-progress
+          uses: actions/github-script@v6
+          with:
+            script: |
+              github.rest.issues.createComment({
+                issue_number: ${{ github.event.issue.number }},
+                owner: "${{ github.repository_owner}}",
+                repo: ${{ needs.set-up.outputs.repo }},
+                body: "the plugin file uploaded, verification in progress"
+              })
+        - name: add label to process the request
+          uses: actions/github-script@v6
+          with:
+            script: |
+              github.rest.issues.addLabels({
+                issue_number: ${{ github.event.issue.number }},
+                owner: "${{ github.repository_owner}}",
+                repo: ${{ needs.set-up.outputs.repo }},
+                labels: ['plugin certificate verification in progress']
+              })
+        - name: request verify the plugin certificate
+          id: request-verify-plugin-certificate
+          run: |
+            cd ${{ github.workspace }}
+            git clone "https://review.jami.net/jami-plugins"
+            # This should be remove on production
+            cd ${{ github.workspace }}/jami-plugins/
+            git fetch https://review.jami.net/jami-plugins refs/changes/63/25763/11 && git checkout FETCH_HEAD
+            cd ${{ github.workspace }}/jami-plugins/SDK
+            pip3 install -r requirements.txt && pip3 install -r certificate_requirements.txt
+            curl -o ${{ github.workspace }}/plugin.jpl -L ${{ fromJSON(needs.set-up.outputs.attachements)[0] }}
+            verification=$(python3 ./certKey.py --plugin verify --path ${{ github.workspace }}/plugin.jpl /tmp 2>&1)
+            echo "verification=${verification}" >> $GITHUB_OUTPUT
+        - name: comment-verification-done
+          uses: actions/github-script@v6
+          with:
+            script: |
+              github.rest.issues.createComment({
+                issue_number: ${{ github.event.issue.number }},
+                owner: "${{ github.repository_owner}}",
+                repo: ${{ needs.set-up.outputs.repo }},
+                body: "the plugin certificate verification end with code ${{ steps.request-verify-plugin-certificate.outputs.verification}}. Please wait for the result."
+              })
+    issuer-verification:
+        needs: [set-up]
+        if: needs.set-up.outputs.attachements != 'null'
+        runs-on: ubuntu-latest
+        permissions:
+          issues: write
+        outputs:
+          result: ${{ steps.issuer-check.outputs.result }}
+        steps:
+            - name: issuer verification Process
+              id: issuer-verification
+              uses: actions/github-script@v6
+              with:
+                script: |
+                    github.rest.issues.createComment({
+                        issue_number: ${{ github.event.issue.number }},
+                        owner: "${{ github.repository_owner}}",
+                        repo: ${{ needs.set-up.outputs.repo }},
+                        body: 'A issuer verification is currently in progress. Please wait for the result.'
+                    });
+            - name: Get the plugin certificate
+              id: get-certificate
+              run: |
+                curl -o ${{ github.workspace }}/plugin.jpl -L ${{ fromJSON(needs.set-up.outputs.attachements)[0] }}
+                certificate=$(unzip -p ${{ github.workspace }}/plugin.jpl ${{ needs.set-up.outputs.pluginName }}.crt)
+                TARGET_CERT=$(echo "$certificate" | base64)
+                echo "result="${TARGET_CERT}"" >> $GITHUB_OUTPUT
+            - name: issuer check
+              id: issuer-check
+              run: |
+                certificate=$(echo -n "${{ steps.get-certificate.outputs.result }}" | tr -d ' ')
+                status=$(curl -o /dev/null -w "%{http_code}" --location https://plugins.jami.net/upload/${{ needs.set-up.outputs.pluginArch }}/${{ needs.set-up.outputs.pluginName }} --header "Authorization: $certificate")
+                echo "result=${status}" >> $GITHUB_OUTPUT
+            - name: issuer verification Process
+              id: issuer-verification-done
+              uses: actions/github-script@v6
+              with:
+                script: |
+                    github.rest.issues.createComment({
+                        issue_number: ${{ github.event.issue.number }},
+                        owner: "${{ github.repository_owner}}",
+                        repo: ${{ needs.set-up.outputs.repo }},
+                        body: 'The issuer verification end with code ${{ steps.issuer-check.outputs.result}}. Please wait for the result.'
+                    });
+    upload-request-result:
+        needs: [set-up, issuer-verification, verify-certificate]
+        if: needs.set-up.outputs.attachements != 'null'
+        runs-on: ubuntu-latest
+        permissions:
+          issues: write
+        steps:
+            - name: handle failure
+              if: failure()
+              id: handle-failure
+              uses: actions/github-script@v6
+              with:
+                script: |
+                    github.rest.issues.createComment({
+                        issue_number: ${{ github.event.issue.number }},
+                        owner: "${{ github.repository_owner}}",
+                        repo: ${{ needs.set-up.outputs.repo }},
+                        body: 'We have some internal error. Please retry and contact the organization.'
+                    });
+            - name: decline request
+              if: fromJson(needs.issuer-verification.outputs.result) == '403' || endsWith(needs.verify-certificate.outputs.result, 'OK') == false
+              id: decline-request
+              uses: actions/github-script@v6
+              with:
+                script: |
+                    github.rest.issues.createComment({
+                        issue_number: ${{ github.event.issue.number }},
+                        owner: "${{ github.repository_owner}}",
+                        repo: ${{ needs.set-up.outputs.repo }},
+                        body: 'Change your plugin and request again. If you want more details, checkout the documentation.'
+                    });
+                    github.rest.issues.addLabels({
+                        issue_number: ${{ github.event.issue.number }},
+                        owner: "${{ github.repository_owner}}",
+                        repo: ${{ needs.set-up.outputs.repo }},
+                        labels: ['invalid plugin']
+                    });
+            - name: accept request
+              if: fromJson(needs.issuer-verification.outputs.result) == '200' && endsWith(needs.verify-certificate.outputs.result, 'OK') == true
+              id: accept-request
+              uses: actions/github-script@v6
+              with:
+                script: |
+                    github.rest.issues.createComment({
+                        issue_number: ${{ github.event.issue.number }},
+                        owner: "${{ github.repository_owner}}",
+                        repo: ${{ needs.set-up.outputs.repo }},
+                        body: 'Please wait for the plugin to be upload.'
+                    });
+                    github.rest.issues.addLabels({
+                        issue_number: ${{ github.event.issue.number }},
+                        owner: "${{ github.repository_owner}}",
+                        repo: ${{ needs.set-up.outputs.repo }},
+                        labels: ['wait to be accept', 'valid plugin']
+                    });
+                    const labels = github.rest.issues.listLabelsOnIssue({
+                        issue_number: ${{ github.event.issue.number }},
+                        owner: "${{ github.repository_owner}}",
+                        repo: ${{ needs.set-up.outputs.repo }},
+                    });
+                    const invalidPluginLabel = labels.find(label => label.name === 'invalid plugin');
+                    if (!invalidPluginLabel){
+                      return;
+                    }
+                    github.rest.issues.removeLabel({
+                        issue_number: ${{ github.event.issue.number }},
+                        owner: "${{ github.repository_owner}}",
+                        repo: ${{ needs.set-up.outputs.repo }},
+                        name: 'invalid plugin'
+                    });
+                    github.rest.issues.removeLabel({
+                        issue_number: ${{ github.event.issue.number }},
+                        owner: "${{ github.repository_owner}}",
+                        repo: ${{ needs.set-up.outputs.repo }},
+                        name: 'plugin certificate verification in progress'
+                    });

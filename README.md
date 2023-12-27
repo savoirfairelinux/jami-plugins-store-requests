@@ -19,7 +19,14 @@ please make sure that your CSR is valid with the command ```openssl req -text -n
 
 ## Submitting a plugin
 
-**Coming soon**
+To request to upload a plugin, please open an issue with the [given templace]().
+
+1. Sign your plugin with [Plugins tool](https://git.jami.net/savoirfairelinux/jami-plugins) and your certificate.
+If you don't have a certificate, please follow the steps to [request a certificate](#request-an-organization-certificate)
+2. Please upload your plugin in a source that can be fetch by anyone. To be sure, use this command:  curl -o tmp/plugin.jpl -L <url-to-fetch-file>
+3. Please use the command to start the verification: /upload <url-to-fetch-file> as a comment in the issue
+4. Wait until it respond successfully to the verification.
+5. An administrator will upload your plugin.
 
 ## More Information
 
