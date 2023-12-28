@@ -28,6 +28,15 @@ If you don't have a certificate, please follow the steps to [request a certifica
 4. Wait until it respond successfully to the verification.
 5. An administrator will upload your plugin.
 
+## Make a decision to upload a plugin(Admin)
+
+To accept or not to upload a plugin, please follow the steps below.
+
+1. Check that the plugin is corretly sign and have the good access to the plugin during the verification process
+2. Verify the plugin manually and check for any security issues
+> Note: Jami is not responsible for the plugin download by user.
+3. Add a comment with the command '/accept' or '/decline' for the decision made
+
 ## More Information
 
 For more information about the Plugins Store, please visit the [Plugins Store documentation](https://git.jami.net/savoirfairelinux/jami-docs/-/blob/master/developer/jami-plugins-certificate.md).
