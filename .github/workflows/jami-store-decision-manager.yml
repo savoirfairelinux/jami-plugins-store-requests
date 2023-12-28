@@ -1,0 +1,153 @@
+name: jami-store-requests-manager-accept
+run-name: Organization decision from ${{ github.actor }}
+on:
+  issue_comment:
+    types: [edited, created]
+jobs:
+    set-up:
+        if: contains(github.event.issue.labels.*.name, 'new upload request') && (startsWith(github.event.comment.body, '/accept') || startsWith(github.event.comment.body, '/decline')) && github.event.comment.author_association == 'MEMBER'
+        runs-on:  ubuntu-latest
+        outputs:
+            repo: ${{ steps.repo.outputs.result }}
+            plugin: ${{ steps.find-plugin.outputs.result }}
+            pluginName: ${{ steps.find_plugin_name.outputs.result }}
+            pluginPlatform: ${{ steps.find-plugin-platform.outputs.result }}
+        steps:
+            - name: get-repo-base-name
+              id: repo
+              uses: actions/github-script@v6
+              with:
+                script: |
+                    const repo = "${{ github.repository }}"
+                    baseName = repo.split("/").at(-1);
+                    return baseName;
+            - name: find uploaded plugin
+              id: find-plugin
+              uses: actions/github-script@v6
+              with:
+                script: |
+                    const regex = /https?:\/\/.*\/.*\.jpl/;
+                    const repo = "${{ github.repository }}"
+                    const { data: comments } = await github.rest.issues.listComments({
+                        owner: "${{ github.repository_owner}}",
+                        repo: ${{ steps.repo.outputs.result }},
+                        issue_number: ${{ github.event.issue.number }}
+                    });
+                    const uploadComment = comments.find(comment => comment.body.includes('/upload'));
+                    return uploadComment === undefined ? null: uploadComment.body.match(regex);
+            - name: find the name of the plugin
+              id: find_plugin_name
+              run: |
+                PLUGIN_FILE=$(basename "${{ fromJSON(steps.find-plugin.outputs.result)[0] }}")
+                echo "result=${PLUGIN_FILE%.*}" >> $GITHUB_OUTPUT
+            - name: find the platform of the plugin
+              id: find-plugin-platform
+              run: |
+                curl -o ${{ github.workspace }}/plugin.jpl -L "${{ fromJSON(steps.find-plugin.outputs.result)[0] }}"
+                regex='^lib/([^/]+)/'
+                ARCHES=$(unzip -l ${{ github.workspace }}/plugin.jpl "lib/*" | grep lib | awk '{ print $NF }' |  grep -oP "$regex" | awk -F'/' '{ print $2 }')
+                PLUGIN_ARCHES=$(jq -nR '[inputs]' <<< "${ARCHES[@]}")
+                if [[ $PLUGIN_ARCHES == *"windows"* || $PLUGIN_ARCHES == *"apple"* || $PLUGIN_ARCHES == *"linux"* ]]; then
+                    TARGET_ARCH="desktop"
+                else
+                    TARGET_ARCH="android"
+                fi
+                echo $TARGET_ARCH
+                echo "result="${TARGET_ARCH}"" >> $GITHUB_OUTPUT
+    handle-error:
+        needs: [set-up]
+        if: needs.set-up.outputs.plugin == 'null'
+        runs-on: ubuntu-latest
+        steps:
+            - name: handle error
+              id: handle-error
+              uses: actions/github-script@v6
+              with:
+                script: |
+                    github.rest.issues.createComment({
+                        issue_number: ${{ github.event.issue.number }},
+                        owner: "${{ github.repository_owner}}",
+                        repo: ${{ needs.set-up.outputs.repo }},
+                        body: '${{ github.actor}}, Please wait the organization to upload the plugin.'
+                    });
+    decline:
+      needs: [set-up]
+      name: Decline request
+      if: startsWith(github.event.comment.body, '/decline')
+      permissions:
+        issues: write
+      runs-on: ubuntu-latest
+      steps:
+          - name: Decline request
+            id: decline-request
+            uses: actions/github-script@v6
+            with:
+              script: |
+                github.rest.issues.createComment({
+                  issue_number: ${{ github.event.issue.number }},
+                  owner: "${{ github.repository_owner}}",
+                  repo: ${{ needs.set-up.outputs.repo }},
+                  body: "The request was declined. Please check the reason and try again."
+                });
+                github.rest.issues.addLabels({
+                    issue_number: ${{ github.event.issue.number }},
+                    owner: "${{ github.repository_owner}}",
+                    repo: ${{ needs.set-up.outputs.repo }},
+                    labels: ['declined request']
+                });
+    accept-request:
+        needs: [set-up]
+        if: startsWith(github.event.comment.body, '/accept') && needs.set-up.outputs.plugin != 'null'
+        runs-on: ubuntu-latest
+        permissions:
+          issues: write
+        steps:
+            - name: Accept request
+              id: accept-request
+              uses: actions/github-script@v6
+              with:
+                script: |
+                  github.rest.issues.createComment({
+                      issue_number: ${{ github.event.issue.number }},
+                      owner: "${{ github.repository_owner}}",
+                      repo: ${{ needs.set-up.outputs.repo }},
+                      body: 'The request was accepted. Please wait for the plugin to be uploaded.'
+                  });
+                  github.rest.issues.addLabels({
+                      issue_number: ${{ github.event.issue.number }},
+                      owner: "${{ github.repository_owner}}",
+                      repo: ${{ needs.set-up.outputs.repo }},
+                      labels: ['accepted request', 'waiting for upload']
+                  });
+                  const labels = await github.rest.issues.listLabelsOnIssue({
+                        issue_number: ${{ github.event.issue.number }},
+                        owner: "${{ github.repository_owner}}",
+                        repo: ${{ needs.set-up.outputs.repo }},
+                    });
+                  console.log(labels);
+                  const declinedRequestLabel = labels.data.find(label => label.name === 'declined request');
+                      if (!declinedRequestLabel){
+                        return;
+                      }
+                  github.rest.issues.removeLabel({
+                      issue_number: ${{ github.event.issue.number }},
+                      owner: "${{ github.repository_owner}}",
+                      repo: ${{ needs.set-up.outputs.repo }},
+                      name: 'declined request'
+                  });
+            - name: Set up SSH connection
+              id: ssh-agent
+              uses: webfactory/ssh-agent@v0.5.0
+              with:
+                ssh-private-key: ${{ secrets.SSH_CREDENTIALS }}
+            - name: Upload plugin
+              run: |
+                curl -o ${{ github.workspace }}/${{ needs.set-up.outputs.pluginName }}.jpl -L ${{ fromJSON(needs.set-up.outputs.plugin)[0] }}
+                VERSION=$(date '+%Y%m%d%H%M')
+                def BRANCH_VERSION=$(date '+%Y%m%d')
+                echo ${VERSION} > version
+                echo ${BRANCH_VERSION} > branchVersion
+                rsync --verbose ${{ github.workspace }}/version ${{ secrets.SSH_HOST_DL_RING_CX }}:${{ secrets.REMOTE_PATH }}/${{needs.set-up.outputs.pluginPlatform}}/version
+                rsync --verbose ${{ github.workspace }}/branchVersion ${{ secrets.SSH_HOST_DL_RING_CX }}:${{ secrets.REMOTE_PATH }}/${{needs.set-up.outputs.pluginPlatform}}/branchVersion
+                rsync --verbose ${{ github.workspace }}/${{ needs.set-up.outputs.pluginName }}.jpl ${{ secrets.SSH_HOST_DL_RING_CX }}:${{ secrets.REMOTE_PATH }}/${{needs.set-up.outputs.pluginPlatform}}/archive/${{ needs.set-up.outputs.pluginName }}-${VERSION}.jpl
+                rsync --verbose ${{ github.workspace }}/${{ needs.set-up.outputs.pluginName }}.jpl ${{ secrets.SSH_HOST_DL_RING_CX }}:${{ secrets.REMOTE_PATH }}/${{ needs.set-up.outputs.pluginName }}/${{needs.set-up.outputs.pluginPlatform}}/${{ needs.set-up.outputs.pluginName }}.jpl
