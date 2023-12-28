@@ -178,7 +178,7 @@ jobs:
                         body: 'We have some internal error. Please retry and contact the organization.'
                     });
             - name: decline request
-              if: fromJson(needs.issuer-verification.outputs.result) == '403' || endsWith(needs.verify-certificate.outputs.result, 'OK') == false
+              if: fromJson(needs.issuer-verification.outputs.result) >= '400' || endsWith(needs.verify-certificate.outputs.result, 'OK') == false
               id: decline-request
               uses: actions/github-script@v6
               with:
